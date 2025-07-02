@@ -94,13 +94,9 @@ def prepare_monthly_data(df, columns, scenario_name):
     return df_monthly
 
 def get_annual_composition(df):
-    """Calcula la composición porcentual anual de la demanda, excluyendo la ambiental."""
+    """Calcula la composición porcentual anual de la demanda."""
     if df.empty: return pd.DataFrame()
-    
-    # CORRECCIÓN: Filtrar el componente 'Ambiental'
-    components_to_plot = {name: cols for name, cols in DEMAND_COMPONENTS.items() if name != 'Ambiental'}
-    
-    totals = {name: df[cols].sum().sum() for name, cols in components_to_plot.items() if all(c in df.columns for c in cols)}
+    totals = {name: df[cols].sum().sum() for name, cols in DEMAND_COMPONENTS.items() if all(c in df.columns for c in cols)}
     total_demand = sum(totals.values())
     if total_demand == 0: return pd.DataFrame()
     percentages = {name: (val / total_demand) * 100 for name, val in totals.items()}
@@ -153,14 +149,9 @@ def plot_boxplot_comparison(s1_data, s2_data, title, yaxis_title):
     if combined_df.empty:
         st.warning(f"No hay datos para el gráfico: {title}")
         return
-    
-    # CORRECCIÓN: Asegurar que todos los meses se muestren en orden
     month_order = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
-    
-    fig = px.box(combined_df, x='Month', y='Total', color='Scenario', title=title, 
-                 labels={'Total': yaxis_title},
-                 category_orders={"Month": month_order}) # <-- Esta línea fuerza el orden
-                 
+    combined_df['Month'] = pd.Categorical(combined_df['Month'], categories=month_order, ordered=True)
+    fig = px.box(combined_df, x='Month', y='Total', color='Scenario', title=title, labels={'Total': yaxis_title})
     fig.update_layout(legend_orientation="h", legend_y=1.15)
     st.plotly_chart(fig, use_container_width=True)
 
@@ -172,8 +163,7 @@ def plot_composition_comparison(s1_data, s2_data):
     s1_data['Escenario'] = 'Escenario 1'
     s2_data['Escenario'] = 'Escenario 2'
     combined_df = pd.concat([s1_data, s2_data])
-    fig = px.bar(combined_df, x='Escenario', y='Porcentaje', color='Componente', 
-                 title='Composición Anual de Demanda (sin componente Ambiental)', barmode='stack')
+    fig = px.bar(combined_df, x='Escenario', y='Porcentaje', color='Componente', title='Composición Anual Promedio de la Demanda', barmode='stack')
     fig.update_layout(yaxis_title='Porcentaje (%)', xaxis_title=None, legend_title='Componente')
     st.plotly_chart(fig, use_container_width=True)
 
