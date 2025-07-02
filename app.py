@@ -2,8 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
-import geopandas as gpd
 import json
 
 # --- Configuración de la Página ---
@@ -64,17 +62,6 @@ def load_manifest(path="soporte/manifest.json"):
         return None
 
 @st.cache_data
-def load_geodata(path):
-    """Carga los datos geoespaciales de las cuencas desde un archivo GeoJSON."""
-    try:
-        gdf = gpd.read_file(path)
-        gdf = gdf.to_crs("EPSG:4326")
-        return gdf
-    except Exception as e:
-        st.error(f"Error al cargar el archivo GeoJSON de cuencas: {e}. Asegúrate de que el archivo '{path}' existe.")
-        return None
-
-@st.cache_data
 def load_data_from_cloud(scenario_params, data_manifest):
     """
     Construye la URL del archivo en la nube basado en los parámetros del escenario,
@@ -85,7 +72,6 @@ def load_data_from_cloud(scenario_params, data_manifest):
     run_code = scenario_params['run']
     temp_code = f"DT{scenario_params['tempChange']}"
     
-    # Calcular el cambio porcentual de precipitación
     precip_val = 100 + scenario_params['precipChange']
     precip_code = f"DP{precip_val}"
 
@@ -97,10 +83,7 @@ def load_data_from_cloud(scenario_params, data_manifest):
     file_name = f"OWF_{policy_code}_{run_code}_{temp_code}_{precip_code}_{pop_code}_{crop_code}_{livestock_code}.csv"
     st.write(f"Buscando archivo en manifiesto: `{file_name}`")
 
-    # 3. Buscar el ID en el manifiesto y construir la URL
-    if data_manifest is None:
-        return pd.DataFrame()
-
+    if data_manifest is None: return pd.DataFrame()
     file_id = data_manifest.get(file_name)
     
     if not file_id:
@@ -110,48 +93,16 @@ def load_data_from_cloud(scenario_params, data_manifest):
     base_url = 'https://docs.google.com/uc?export=download&id='
     final_url = base_url + file_id
 
-    # 4. Cargar los datos desde la URL
+    # 3. Cargar los datos desde la URL
     try:
         with st.spinner(f"Descargando datos desde la nube para {file_name}..."):
             df = pd.read_csv(final_url)
-            # Asumiendo que la primera columna es la fecha, aunque no tenga nombre
             df = df.rename(columns={df.columns[0]: 'Date'})
             df['Date'] = pd.to_datetime(df['Date'])
             return df
     except Exception as e:
         st.error(f"Error al descargar o procesar el archivo desde la nube: {file_name}. Verifique el ID y los permisos del archivo. Error: {e}")
         return pd.DataFrame()
-
-
-def calculate_stress_values(df, year=2070):
-    """Calcula el índice de estrés hídrico para cada cuenca en un año específico."""
-    if df.empty:
-        return {}
-        
-    data_year = df[df['Date'].dt.year == year]
-    if data_year.empty:
-        return {}
-
-    cuenca_base_names = list(set([c.split('_')[1] for c in df.columns if c.startswith('Denv_')]))
-    stress_values = {}
-
-    for base_name in cuenca_base_names:
-        denv_col = f'Denv_{base_name}_cmd'
-        oferta_col = f'To_downstream_from_{base_name}_cmd'
-        demanda_cols = [f'Dfwr_{base_name}_cmd', f'Dfwu_{base_name}_cmd', f'Dirr_{base_name}_cmd', f'Dliv_{base_name}_cmd']
-        
-        demanda_existente = [col for col in demanda_cols if col in data_year.columns]
-        if not demanda_existente or denv_col not in data_year.columns or oferta_col not in data_year.columns:
-            continue
-
-        demanda_total = data_year[demanda_existente].sum(axis=1) + data_year[denv_col]
-        oferta = data_year[oferta_col]
-        
-        stress_index = np.divide(demanda_total, oferta, out=np.full_like(demanda_total, 10, dtype=float), where=oferta!=0)
-        avg_stress = stress_index.mean()
-        stress_values[base_name] = base_name # Usar el nombre base para el mapeo
-        
-    return stress_values
 
 # --- Componentes de la Interfaz de Usuario (UI) ---
 
@@ -188,34 +139,6 @@ def scenario_controls(key_prefix):
 
 # --- Funciones de Gráficos ---
 
-def plot_stress_map(gdf, stress_data_s1, stress_data_s2):
-    """Dibuja el mapa coroplético con el estrés hídrico."""
-    if gdf is None: return
-    
-    # El mapeo ahora es más directo si los nombres coinciden
-    gdf['stress_s1'] = gdf['NOMSZH'].map(stress_data_s1).fillna(0)
-    gdf['stress_s2'] = gdf['NOMSZH'].map(stress_data_s2).fillna(0)
-
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Mapa de Estrés Hídrico - Escenario 1")
-        fig1 = px.choropleth_mapbox(gdf, geojson=gdf.geometry, locations=gdf.index, color="stress_s1",
-                                   color_continuous_scale="Reds", range_color=(0, 2),
-                                   mapbox_style="carto-positron", zoom=5.5, center={"lat": 4.5, "lon": -72.5},
-                                   opacity=0.6, labels={'stress_s1': 'Índice de Estrés'}, hover_name="NOMSZH")
-        fig1.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
-        st.plotly_chart(fig1, use_container_width=True)
-        
-    with col2:
-        st.subheader("Mapa de Estrés Hídrico - Escenario 2")
-        fig2 = px.choropleth_mapbox(gdf, geojson=gdf.geometry, locations=gdf.index, color="stress_s2",
-                                   color_continuous_scale="Reds", range_color=(0, 2),
-                                   mapbox_style="carto-positron", zoom=5.5, center={"lat": 4.5, "lon": -72.5},
-                                   opacity=0.6, labels={'stress_s2': 'Índice de Estrés'}, hover_name="NOMSZH")
-        fig2.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
-        st.plotly_chart(fig2, use_container_width=True)
-
 def plot_demand_composition(df, title):
     """Dibuja un gráfico de pie con la composición de la demanda."""
     if df is None or df.empty:
@@ -246,28 +169,19 @@ def main():
     
     st.title("💧 Visualizador de Escenarios Hídricos - Orinoquia Water Futures")
     st.markdown("Esta herramienta permite comparar dinámicamente dos escenarios de recursos hídricos para la cuenca del río Meta.")
-    st.info("**Instrucción:** Asegúrate de que tus archivos `manifest.json` y `cuencas.geojson` estén en la carpeta `soporte/` de tu repositorio de GitHub.")
+    st.info("**Instrucción:** Asegúrate de que tu archivo `manifest.json` esté en la carpeta `soporte/` de tu repositorio de GitHub.")
 
     data_manifest = load_manifest()
-    gdf = load_geodata("soporte/cuencas/cuencas.geojson")
     s1_params, s2_params, generate_button = sidebar_ui()
     
     if generate_button:
-        if data_manifest and gdf is not None:
+        if data_manifest:
             df_s1 = load_data_from_cloud(s1_params, data_manifest)
             df_s2 = load_data_from_cloud(s2_params, data_manifest)
             
             if df_s1.empty or df_s2.empty:
                 st.error("No se pudieron cargar los datos para uno o ambos escenarios. Por favor, verifique la configuración y el contenido de 'manifest.json'.")
             else:
-                stress_s1 = calculate_stress_values(df_s1)
-                stress_s2 = calculate_stress_values(df_s2)
-
-                st.header("Análisis de Estrés Hídrico por Cuenca (Año 2070)")
-                plot_stress_map(gdf, stress_s1, stress_s2)
-                
-                st.markdown("---")
-                
                 st.header("Composición de la Demanda de Agua Anual")
                 col1, col2 = st.columns(2)
                 with col1:
@@ -275,7 +189,7 @@ def main():
                 with col2:
                     plot_demand_composition(df_s2, "Escenario 2")
         else:
-            st.error("No se puede continuar porque 'manifest.json' o 'cuencas.geojson' no se pudieron cargar. Revisa la ubicación y el formato de los archivos.")
+            st.error("No se puede continuar. Revisa que 'manifest.json' esté cargado correctamente.")
     else:
         st.info("Configure los escenarios en la barra lateral y presione 'Generar Comparación' para ver los resultados.")
 
