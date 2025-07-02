@@ -47,19 +47,21 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# --- MANIFIESTO DE DATOS ---
-# ADVERTENCIA: Este es un manifiesto de ejemplo.
-# Debes reemplazar los valores de ID con los IDs de tus propios archivos en Google Drive.
-# La clave es el nombre del archivo CSV, y el valor es el ID de Google Drive.
-DATA_MANIFEST = {
-    "fcfs_t2_p0_d2050_c2050_l2050_results.csv": "ID_DE_TU_ARCHIVO_AQUI_1",
-    "pe_t2_p0_d2050_c2050_l2050_results.csv": "ID_DE_TU_ARCHIVO_AQUI_2",
-    "fcfs_t5_pn30_d2040_c2040_l2040_results.csv": "ID_DE_TU_ARCHIVO_AQUI_3",
-    # Agrega aquí todas las demás combinaciones de tus escenarios
-}
-
-
 # --- Funciones de Lógica y Datos ---
+
+@st.cache_data
+def load_manifest(path="soporte/manifest.json"):
+    """Carga el manifiesto de datos desde un archivo JSON."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            manifest = json.load(f)
+        return manifest
+    except FileNotFoundError:
+        st.error(f"Error: No se encontró el archivo '{path}'. Asegúrate de que el archivo existe en la ubicación correcta.")
+        return None
+    except json.JSONDecodeError:
+        st.error(f"Error: El archivo '{path}' no es un JSON válido. Revisa su formato.")
+        return None
 
 @st.cache_data
 def load_geodata(path):
@@ -73,7 +75,7 @@ def load_geodata(path):
         return None
 
 @st.cache_data
-def load_data_from_cloud(scenario_params):
+def load_data_from_cloud(scenario_params, data_manifest):
     """
     Construye la URL del archivo en la nube basado en los parámetros del escenario,
     y carga los datos en un DataFrame de pandas.
@@ -83,10 +85,7 @@ def load_data_from_cloud(scenario_params):
     temp_code = f"t{scenario_params['tempChange']}"
     
     precip_val = scenario_params['precipChange']
-    if precip_val < 0:
-        precip_code = f"pn{abs(precip_val)}"
-    else:
-        precip_code = f"p{precip_val}"
+    precip_code = f"pn{abs(precip_val)}" if precip_val < 0 else f"p{precip_val}"
 
     pop_code = f"d{scenario_params['popYear']}"
     crop_code = f"c{scenario_params['cropYear']}"
@@ -94,16 +93,18 @@ def load_data_from_cloud(scenario_params):
 
     # 2. Construir el nombre del archivo
     file_name = f"{policy_code}_{temp_code}_{precip_code}_{pop_code}_{crop_code}_{livestock_code}_results.csv"
-    st.write(f"Buscando archivo: `{file_name}`") # Mensaje de depuración
+    st.write(f"Buscando archivo: `{file_name}`")
 
     # 3. Buscar el ID en el manifiesto y construir la URL
-    file_id = DATA_MANIFEST.get(file_name)
-    
-    if not file_id or file_id.startswith("ID_DE_TU_ARCHIVO"):
-        st.warning(f"No se encontró un ID de archivo válido para el escenario: `{file_name}`. Se usarán datos vacíos.")
-        return pd.DataFrame() # Retorna un DataFrame vacío si no se encuentra
+    if data_manifest is None:
+        return pd.DataFrame()
 
-    # URL base para descarga directa de archivos de Google Drive
+    file_id = data_manifest.get(file_name)
+    
+    if not file_id:
+        st.warning(f"No se encontró un ID de archivo en 'manifest.json' para el escenario: `{file_name}`. Se usarán datos vacíos.")
+        return pd.DataFrame()
+
     base_url = 'https://docs.google.com/uc?export=download&id='
     final_url = base_url + file_id
 
@@ -135,7 +136,6 @@ def calculate_stress_values(df, year=2070):
         oferta_col = f'To_downstream_from_{base_name}_cmd'
         demanda_cols = [f'Dfwr_{base_name}_cmd', f'Dfwu_{base_name}_cmd', f'Dirr_{base_name}_cmd', f'Dliv_{base_name}_cmd']
         
-        # Asegurarse que las columnas existan antes de sumar
         demanda_existente = [col for col in demanda_cols if col in data_year.columns]
         if not demanda_existente or denv_col not in data_year.columns or oferta_col not in data_year.columns:
             continue
@@ -185,8 +185,7 @@ def scenario_controls(key_prefix):
 
 def plot_stress_map(gdf, stress_data_s1, stress_data_s2):
     """Dibuja el mapa coroplético con el estrés hídrico."""
-    if gdf is None:
-        return
+    if gdf is None: return
     
     cuenca_mapping = {
         "1": "Garagoa", "2": "Guatiquia", "3": "Guayuriba", "4": "Humea", "5": "Negro",
@@ -247,35 +246,37 @@ def main():
     """Función principal que ejecuta la aplicación Streamlit."""
     
     st.title("💧 Visualizador de Escenarios Hídricos - Orinoquia Water Futures")
-    st.markdown("Esta herramienta permite comparar dinámicamente dos escenarios de recursos hídricos para la cuenca del río Meta, basados en el modelo OWF.")
-    st.info("**Importante:** Esta aplicación se conecta a datos en la nube. Edite el diccionario `DATA_MANIFEST` en el código `app.py` con los IDs de sus propios archivos de Google Drive para que funcione correctamente.")
+    st.markdown("Esta herramienta permite comparar dinámicamente dos escenarios de recursos hídricos para la cuenca del río Meta.")
+    st.info("**Instrucción:** Asegúrate de colocar tu archivo `manifest.json` en la carpeta `soporte/` para que la aplicación pueda cargar los datos.")
 
+    data_manifest = load_manifest()
     gdf = load_geodata("soporte/cuencas/cuencas.json")
     s1_params, s2_params, generate_button = sidebar_ui()
     
     if generate_button:
-        # Cargar datos desde la nube en lugar de generar datos de prueba
-        df_s1 = load_data_from_cloud(s1_params)
-        df_s2 = load_data_from_cloud(s2_params)
-        
-        # Continuar solo si se cargaron datos para ambos escenarios
-        if df_s1.empty or df_s2.empty:
-            st.error("No se pudieron cargar los datos para uno o ambos escenarios. Por favor, verifique la configuración y el manifiesto de datos.")
-        else:
-            stress_s1 = calculate_stress_values(df_s1)
-            stress_s2 = calculate_stress_values(df_s2)
+        if data_manifest:
+            df_s1 = load_data_from_cloud(s1_params, data_manifest)
+            df_s2 = load_data_from_cloud(s2_params, data_manifest)
+            
+            if df_s1.empty or df_s2.empty:
+                st.error("No se pudieron cargar los datos para uno o ambos escenarios. Por favor, verifique la configuración y el contenido de 'manifest.json'.")
+            else:
+                stress_s1 = calculate_stress_values(df_s1)
+                stress_s2 = calculate_stress_values(df_s2)
 
-            st.header("Análisis de Estrés Hídrico por Cuenca (Año 2070)")
-            plot_stress_map(gdf, stress_s1, stress_s2)
-            
-            st.markdown("---")
-            
-            st.header("Composición de la Demanda de Agua Anual")
-            col1, col2 = st.columns(2)
-            with col1:
-                plot_demand_composition(df_s1, "Escenario 1")
-            with col2:
-                plot_demand_composition(df_s2, "Escenario 2")
+                st.header("Análisis de Estrés Hídrico por Cuenca (Año 2070)")
+                plot_stress_map(gdf, stress_s1, stress_s2)
+                
+                st.markdown("---")
+                
+                st.header("Composición de la Demanda de Agua Anual")
+                col1, col2 = st.columns(2)
+                with col1:
+                    plot_demand_composition(df_s1, "Escenario 1")
+                with col2:
+                    plot_demand_composition(df_s2, "Escenario 2")
+        else:
+            st.error("No se puede continuar porque el archivo 'manifest.json' no se pudo cargar. Revisa la ubicación y el formato del archivo.")
     else:
         st.info("Configure los escenarios en la barra lateral y presione 'Generar Comparación' para ver los resultados.")
 
