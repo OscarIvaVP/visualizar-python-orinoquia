@@ -47,6 +47,18 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# --- MANIFIESTO DE DATOS ---
+# ADVERTENCIA: Este es un manifiesto de ejemplo.
+# Debes reemplazar los valores de ID con los IDs de tus propios archivos en Google Drive.
+# La clave es el nombre del archivo CSV, y el valor es el ID de Google Drive.
+DATA_MANIFEST = {
+    "fcfs_t2_p0_d2050_c2050_l2050_results.csv": "ID_DE_TU_ARCHIVO_AQUI_1",
+    "pe_t2_p0_d2050_c2050_l2050_results.csv": "ID_DE_TU_ARCHIVO_AQUI_2",
+    "fcfs_t5_pn30_d2040_c2040_l2040_results.csv": "ID_DE_TU_ARCHIVO_AQUI_3",
+    # Agrega aquí todas las demás combinaciones de tus escenarios
+}
+
+
 # --- Funciones de Lógica y Datos ---
 
 @st.cache_data
@@ -54,7 +66,6 @@ def load_geodata(path):
     """Carga los datos geoespaciales de las cuencas desde un archivo GeoJSON."""
     try:
         gdf = gpd.read_file(path)
-        # Asegurarse de que el CRS sea el correcto para Plotly
         gdf = gdf.to_crs("EPSG:4326")
         return gdf
     except Exception as e:
@@ -62,45 +73,56 @@ def load_geodata(path):
         return None
 
 @st.cache_data
-def generate_mock_data(scenario_params, start_year=2020, end_year=2070):
+def load_data_from_cloud(scenario_params):
     """
-    Genera datos simulados (mock data) para un escenario dado.
-    En una implementación real, esta función se conectaría al modelo Pywr
-    o a una base de datos con los resultados de la simulación.
+    Construye la URL del archivo en la nube basado en los parámetros del escenario,
+    y carga los datos en un DataFrame de pandas.
     """
-    np.random.seed(sum(ord(c) for c in json.dumps(scenario_params)))
+    # 1. Traducir selecciones de la UI a los códigos de los nombres de archivo
+    policy_code = "fcfs" if scenario_params['policy'] == "First Come First Served (FCFS)" else "pe"
+    temp_code = f"t{scenario_params['tempChange']}"
     
-    dates = pd.to_datetime(pd.date_range(start=f'{start_year}-01-01', end=f'{end_year}-12-31', freq='MS'))
-    num_records = len(dates)
-    
-    # Nombres base de las cuencas (extraídos del código original)
-    cuenca_base_names = [
-        "Cravo_sur", "Pauto", "Tua", "Cusiana", "Upia", "Guanapalo", "Lengupa", 
-        "Guatiquia", "Guayuriba", "Metica", "Humea", "Guavio", "Negro", "Garagoa",
-        "Manacacias", "Melua", "Yucao"
-    ]
-    
-    data = {"Date": dates.strftime('%Y-%m-%d')}
-    
-    # Generar columnas de datos aleatorios pero plausibles
-    for cuenca in cuenca_base_names:
-        # Oferta de agua (To_downstream)
-        oferta_base = np.random.uniform(50, 500)
-        data[f'To_downstream_from_{cuenca}_cmd'] = np.random.normal(oferta_base, oferta_base * 0.4, num_records).clip(0)
-        
-        # Demandas
-        data[f'Denv_{cuenca}_cmd'] = np.random.normal(oferta_base * 0.1, oferta_base * 0.05, num_records).clip(0)
-        data[f'Dfwr_{cuenca}_cmd'] = np.random.normal(oferta_base * 0.05, oferta_base * 0.02, num_records).clip(0)
-        data[f'Dfwu_{cuenca}_cmd'] = np.random.normal(oferta_base * 0.08, oferta_base * 0.03, num_records).clip(0)
-        data[f'Dirr_{cuenca}_cmd'] = np.random.normal(oferta_base * 0.15, oferta_base * 0.08, num_records).clip(0)
-        data[f'Dliv_{cuenca}_cmd'] = np.random.normal(oferta_base * 0.03, oferta_base * 0.01, num_records).clip(0)
+    precip_val = scenario_params['precipChange']
+    if precip_val < 0:
+        precip_code = f"pn{abs(precip_val)}"
+    else:
+        precip_code = f"p{precip_val}"
 
-    df = pd.DataFrame(data)
-    df['Date'] = pd.to_datetime(df['Date'])
-    return df
+    pop_code = f"d{scenario_params['popYear']}"
+    crop_code = f"c{scenario_params['cropYear']}"
+    livestock_code = f"l{scenario_params['livestockYear']}"
+
+    # 2. Construir el nombre del archivo
+    file_name = f"{policy_code}_{temp_code}_{precip_code}_{pop_code}_{crop_code}_{livestock_code}_results.csv"
+    st.write(f"Buscando archivo: `{file_name}`") # Mensaje de depuración
+
+    # 3. Buscar el ID en el manifiesto y construir la URL
+    file_id = DATA_MANIFEST.get(file_name)
+    
+    if not file_id or file_id.startswith("ID_DE_TU_ARCHIVO"):
+        st.warning(f"No se encontró un ID de archivo válido para el escenario: `{file_name}`. Se usarán datos vacíos.")
+        return pd.DataFrame() # Retorna un DataFrame vacío si no se encuentra
+
+    # URL base para descarga directa de archivos de Google Drive
+    base_url = 'https://docs.google.com/uc?export=download&id='
+    final_url = base_url + file_id
+
+    # 4. Cargar los datos desde la URL
+    try:
+        with st.spinner(f"Descargando datos desde la nube para {file_name}..."):
+            df = pd.read_csv(final_url)
+            df['Date'] = pd.to_datetime(df['Date'])
+            return df
+    except Exception as e:
+        st.error(f"Error al descargar o procesar el archivo desde la nube: {file_name}. Verifique el ID y los permisos del archivo. Error: {e}")
+        return pd.DataFrame()
+
 
 def calculate_stress_values(df, year=2070):
     """Calcula el índice de estrés hídrico para cada cuenca en un año específico."""
+    if df.empty:
+        return {}
+        
     data_year = df[df['Date'].dt.year == year]
     if data_year.empty:
         return {}
@@ -113,11 +135,15 @@ def calculate_stress_values(df, year=2070):
         oferta_col = f'To_downstream_from_{base_name}_cmd'
         demanda_cols = [f'Dfwr_{base_name}_cmd', f'Dfwu_{base_name}_cmd', f'Dirr_{base_name}_cmd', f'Dliv_{base_name}_cmd']
         
-        demanda_total = data_year[demanda_cols].sum(axis=1) + data_year[denv_col]
+        # Asegurarse que las columnas existan antes de sumar
+        demanda_existente = [col for col in demanda_cols if col in data_year.columns]
+        if not demanda_existente or denv_col not in data_year.columns or oferta_col not in data_year.columns:
+            continue
+
+        demanda_total = data_year[demanda_existente].sum(axis=1) + data_year[denv_col]
         oferta = data_year[oferta_col]
         
-        # Evitar división por cero
-        stress_index = np.divide(demanda_total, oferta, out=np.full_like(demanda_total, 10), where=oferta!=0)
+        stress_index = np.divide(demanda_total, oferta, out=np.full_like(demanda_total, 10, dtype=float), where=oferta!=0)
         avg_stress = stress_index.mean()
         stress_values[base_name] = avg_stress
         
@@ -162,8 +188,6 @@ def plot_stress_map(gdf, stress_data_s1, stress_data_s2):
     if gdf is None:
         return
     
-    # Mapear nombres de cuencas del GeoJSON a los datos de estrés
-    # Esto es una suposición y podría necesitar ajustes con los datos reales
     cuenca_mapping = {
         "1": "Garagoa", "2": "Guatiquia", "3": "Guayuriba", "4": "Humea", "5": "Negro",
         "6": "Upia", "7": "Lengupa", "8": "Guanapalo", "9": "Pauto", "10": "Cusiana",
@@ -171,53 +195,33 @@ def plot_stress_map(gdf, stress_data_s1, stress_data_s2):
         "16": "Yucao", "17": "Melua"
     }
 
-    gdf['stress_s1'] = gdf['NombreD'].map(lambda x: stress_data_s1.get(cuenca_mapping.get(x), 0))
-    gdf['stress_s2'] = gdf['NombreD'].map(lambda x: stress_data_s2.get(cuenca_mapping.get(x), 0))
+    gdf['stress_s1'] = gdf['NombreD'].map(lambda x: stress_data_s1.get(cuenca_mapping.get(str(x)), 0))
+    gdf['stress_s2'] = gdf['NombreD'].map(lambda x: stress_data_s2.get(cuenca_mapping.get(str(x)), 0))
 
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("Mapa de Estrés Hídrico - Escenario 1")
-        fig1 = px.choropleth_mapbox(
-            gdf,
-            geojson=gdf.geometry,
-            locations=gdf.index,
-            color="stress_s1",
-            color_continuous_scale="Reds",
-            range_color=(0, 2),
-            mapbox_style="carto-positron",
-            zoom=5.5,
-            center={"lat": 4.5, "lon": -72.5},
-            opacity=0.6,
-            labels={'stress_s1': 'Índice de Estrés'},
-            hover_name="NOMSZH"
-        )
+        fig1 = px.choropleth_mapbox(gdf, geojson=gdf.geometry, locations=gdf.index, color="stress_s1",
+                                   color_continuous_scale="Reds", range_color=(0, 2),
+                                   mapbox_style="carto-positron", zoom=5.5, center={"lat": 4.5, "lon": -72.5},
+                                   opacity=0.6, labels={'stress_s1': 'Índice de Estrés'}, hover_name="NOMSZH")
         fig1.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
         st.plotly_chart(fig1, use_container_width=True)
         
     with col2:
         st.subheader("Mapa de Estrés Hídrico - Escenario 2")
-        fig2 = px.choropleth_mapbox(
-            gdf,
-            geojson=gdf.geometry,
-            locations=gdf.index,
-            color="stress_s2",
-            color_continuous_scale="Reds",
-            range_color=(0, 2),
-            mapbox_style="carto-positron",
-            zoom=5.5,
-            center={"lat": 4.5, "lon": -72.5},
-            opacity=0.6,
-            labels={'stress_s2': 'Índice de Estrés'},
-            hover_name="NOMSZH"
-        )
+        fig2 = px.choropleth_mapbox(gdf, geojson=gdf.geometry, locations=gdf.index, color="stress_s2",
+                                   color_continuous_scale="Reds", range_color=(0, 2),
+                                   mapbox_style="carto-positron", zoom=5.5, center={"lat": 4.5, "lon": -72.5},
+                                   opacity=0.6, labels={'stress_s2': 'Índice de Estrés'}, hover_name="NOMSZH")
         fig2.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
         st.plotly_chart(fig2, use_container_width=True)
 
 def plot_demand_composition(df, title):
     """Dibuja un gráfico de pie con la composición de la demanda."""
-    if df is None:
-        st.warning(f"No hay datos para generar el gráfico: {title}")
+    if df is None or df.empty:
+        st.warning(f"No hay datos para generar el gráfico de demanda para: {title}")
         return
         
     demand_cols = [col for col in df.columns if col.startswith(('Denv_', 'Dfwr_', 'Dfwu_', 'Dirr_', 'Dliv_'))]
@@ -244,37 +248,34 @@ def main():
     
     st.title("💧 Visualizador de Escenarios Hídricos - Orinoquia Water Futures")
     st.markdown("Esta herramienta permite comparar dinámicamente dos escenarios de recursos hídricos para la cuenca del río Meta, basados en el modelo OWF.")
+    st.info("**Importante:** Esta aplicación se conecta a datos en la nube. Edite el diccionario `DATA_MANIFEST` en el código `app.py` con los IDs de sus propios archivos de Google Drive para que funcione correctamente.")
 
-    # Cargar datos geoespaciales
     gdf = load_geodata("soporte/cuencas/cuencas.json")
-
-    # Controles de la barra lateral
     s1_params, s2_params, generate_button = sidebar_ui()
     
     if generate_button:
-        with st.spinner("Generando datos y gráficos para los escenarios... Por favor espere."):
-            # Generar datos para ambos escenarios
-            df_s1 = generate_mock_data(s1_params)
-            df_s2 = generate_mock_data(s2_params)
-            
-            # Calcular estrés hídrico para los mapas
+        # Cargar datos desde la nube en lugar de generar datos de prueba
+        df_s1 = load_data_from_cloud(s1_params)
+        df_s2 = load_data_from_cloud(s2_params)
+        
+        # Continuar solo si se cargaron datos para ambos escenarios
+        if df_s1.empty or df_s2.empty:
+            st.error("No se pudieron cargar los datos para uno o ambos escenarios. Por favor, verifique la configuración y el manifiesto de datos.")
+        else:
             stress_s1 = calculate_stress_values(df_s1)
             stress_s2 = calculate_stress_values(df_s2)
 
-            # Mostrar mapas
             st.header("Análisis de Estrés Hídrico por Cuenca (Año 2070)")
             plot_stress_map(gdf, stress_s1, stress_s2)
             
             st.markdown("---")
             
-            # Mostrar composición de la demanda
             st.header("Composición de la Demanda de Agua Anual")
             col1, col2 = st.columns(2)
             with col1:
                 plot_demand_composition(df_s1, "Escenario 1")
             with col2:
                 plot_demand_composition(df_s2, "Escenario 2")
-
     else:
         st.info("Configure los escenarios en la barra lateral y presione 'Generar Comparación' para ver los resultados.")
 
