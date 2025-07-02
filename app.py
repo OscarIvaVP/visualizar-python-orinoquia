@@ -57,7 +57,7 @@ def load_manifest(path="soporte/manifest.json"):
             manifest = json.load(f)
         return manifest
     except FileNotFoundError:
-        st.error(f"Error: No se encontró el archivo '{path}'. Asegúrate de que el archivo existe en la ubicación correcta.")
+        st.error(f"Error: No se encontró el archivo '{path}'. Asegúrate de que el archivo existe en la ubicación correcta dentro de tu repositorio de GitHub.")
         return None
     except json.JSONDecodeError:
         st.error(f"Error: El archivo '{path}' no es un JSON válido. Revisa su formato.")
@@ -71,7 +71,7 @@ def load_geodata(path):
         gdf = gdf.to_crs("EPSG:4326")
         return gdf
     except Exception as e:
-        st.error(f"Error al cargar el archivo GeoJSON de cuencas: {e}")
+        st.error(f"Error al cargar el archivo GeoJSON de cuencas: {e}. Asegúrate de que el archivo '{path}' existe.")
         return None
 
 @st.cache_data
@@ -81,19 +81,21 @@ def load_data_from_cloud(scenario_params, data_manifest):
     y carga los datos en un DataFrame de pandas.
     """
     # 1. Traducir selecciones de la UI a los códigos de los nombres de archivo
-    policy_code = "fcfs" if scenario_params['policy'] == "First Come First Served (FCFS)" else "pe"
-    temp_code = f"t{scenario_params['tempChange']}"
+    policy_code = "FCFS" if scenario_params['policy'] == "First Come First Served (FCFS)" else "PE"
+    run_code = scenario_params['run']
+    temp_code = f"DT{scenario_params['tempChange']}"
     
-    precip_val = scenario_params['precipChange']
-    precip_code = f"pn{abs(precip_val)}" if precip_val < 0 else f"p{precip_val}"
+    # Calcular el cambio porcentual de precipitación
+    precip_val = 100 + scenario_params['precipChange']
+    precip_code = f"DP{precip_val}"
 
-    pop_code = f"d{scenario_params['popYear']}"
-    crop_code = f"c{scenario_params['cropYear']}"
-    livestock_code = f"l{scenario_params['livestockYear']}"
+    pop_code = f"FW{scenario_params['popYear']}"
+    crop_code = f"Irr{scenario_params['cropYear']}"
+    livestock_code = f"Liv{scenario_params['livestockYear']}"
 
-    # 2. Construir el nombre del archivo
-    file_name = f"{policy_code}_{temp_code}_{precip_code}_{pop_code}_{crop_code}_{livestock_code}_results.csv"
-    st.write(f"Buscando archivo: `{file_name}`")
+    # 2. Construir el nombre del archivo EXACTAMENTE como en manifest.json
+    file_name = f"OWF_{policy_code}_{run_code}_{temp_code}_{precip_code}_{pop_code}_{crop_code}_{livestock_code}.csv"
+    st.write(f"Buscando archivo en manifiesto: `{file_name}`")
 
     # 3. Buscar el ID en el manifiesto y construir la URL
     if data_manifest is None:
@@ -112,6 +114,8 @@ def load_data_from_cloud(scenario_params, data_manifest):
     try:
         with st.spinner(f"Descargando datos desde la nube para {file_name}..."):
             df = pd.read_csv(final_url)
+            # Asumiendo que la primera columna es la fecha, aunque no tenga nombre
+            df = df.rename(columns={df.columns[0]: 'Date'})
             df['Date'] = pd.to_datetime(df['Date'])
             return df
     except Exception as e:
@@ -145,7 +149,7 @@ def calculate_stress_values(df, year=2070):
         
         stress_index = np.divide(demanda_total, oferta, out=np.full_like(demanda_total, 10, dtype=float), where=oferta!=0)
         avg_stress = stress_index.mean()
-        stress_values[base_name] = avg_stress
+        stress_values[base_name] = base_name # Usar el nombre base para el mapeo
         
     return stress_values
 
@@ -174,11 +178,12 @@ def scenario_controls(key_prefix):
     """Crea un conjunto de controles para un escenario."""
     params = {}
     params['policy'] = st.selectbox("Política de Asignación:", ["First Come First Served (FCFS)", "Policy Enforced (PE)"], key=f"policy_{key_prefix}")
+    params['run'] = st.selectbox("Réplica:", ["R1", "R2", "R3", "R4", "R5"], key=f"run_{key_prefix}")
     params['tempChange'] = st.slider("Cambio de Temperatura (°C):", 0, 5, 2, key=f"temp_{key_prefix}")
     params['precipChange'] = st.slider("Cambio de Precipitación (%):", -30, 30, 0, 10, key=f"precip_{key_prefix}")
-    params['popYear'] = st.selectbox("Año Proy. Población:", [2022, 2030, 2040, 2050], index=3, key=f"pop_{key_prefix}")
-    params['cropYear'] = st.selectbox("Año Proy. Cultivos:", [2022, 2030, 2040, 2050], index=3, key=f"crop_{key_prefix}")
-    params['livestockYear'] = st.selectbox("Año Proy. Pecuario:", [2022, 2030, 2040, 2050], index=3, key=f"livestock_{key_prefix}")
+    params['popYear'] = st.selectbox("Año Proy. Población:", [2022, 2030, 2040, 2050], index=1, key=f"pop_{key_prefix}")
+    params['cropYear'] = st.selectbox("Año Proy. Cultivos:", [2022, 2030, 2040, 2050], index=0, key=f"crop_{key_prefix}")
+    params['livestockYear'] = st.selectbox("Año Proy. Pecuario:", [2022, 2030, 2040, 2050], index=1, key=f"livestock_{key_prefix}")
     return params
 
 # --- Funciones de Gráficos ---
@@ -187,15 +192,9 @@ def plot_stress_map(gdf, stress_data_s1, stress_data_s2):
     """Dibuja el mapa coroplético con el estrés hídrico."""
     if gdf is None: return
     
-    cuenca_mapping = {
-        "1": "Garagoa", "2": "Guatiquia", "3": "Guayuriba", "4": "Humea", "5": "Negro",
-        "6": "Upia", "7": "Lengupa", "8": "Guanapalo", "9": "Pauto", "10": "Cusiana",
-        "11": "Cravo sur", "12": "Tua", "13": "Manacacias", "14": "Metica", "15": "Guavio",
-        "16": "Yucao", "17": "Melua"
-    }
-
-    gdf['stress_s1'] = gdf['NombreD'].map(lambda x: stress_data_s1.get(cuenca_mapping.get(str(x)), 0))
-    gdf['stress_s2'] = gdf['NombreD'].map(lambda x: stress_data_s2.get(cuenca_mapping.get(str(x)), 0))
+    # El mapeo ahora es más directo si los nombres coinciden
+    gdf['stress_s1'] = gdf['NOMSZH'].map(stress_data_s1).fillna(0)
+    gdf['stress_s2'] = gdf['NOMSZH'].map(stress_data_s2).fillna(0)
 
     col1, col2 = st.columns(2)
     
@@ -247,14 +246,14 @@ def main():
     
     st.title("💧 Visualizador de Escenarios Hídricos - Orinoquia Water Futures")
     st.markdown("Esta herramienta permite comparar dinámicamente dos escenarios de recursos hídricos para la cuenca del río Meta.")
-    st.info("**Instrucción:** Asegúrate de colocar tu archivo `manifest.json` en la carpeta `soporte/` para que la aplicación pueda cargar los datos.")
+    st.info("**Instrucción:** Asegúrate de que tus archivos `manifest.json` y `cuencas.geojson` estén en la carpeta `soporte/` de tu repositorio de GitHub.")
 
     data_manifest = load_manifest()
-    gdf = load_geodata("soporte/cuencas/cuencas.json")
+    gdf = load_geodata("soporte/cuencas/cuencas.geojson")
     s1_params, s2_params, generate_button = sidebar_ui()
     
     if generate_button:
-        if data_manifest:
+        if data_manifest and gdf is not None:
             df_s1 = load_data_from_cloud(s1_params, data_manifest)
             df_s2 = load_data_from_cloud(s2_params, data_manifest)
             
@@ -276,7 +275,7 @@ def main():
                 with col2:
                     plot_demand_composition(df_s2, "Escenario 2")
         else:
-            st.error("No se puede continuar porque el archivo 'manifest.json' no se pudo cargar. Revisa la ubicación y el formato del archivo.")
+            st.error("No se puede continuar porque 'manifest.json' o 'cuencas.geojson' no se pudieron cargar. Revisa la ubicación y el formato de los archivos.")
     else:
         st.info("Configure los escenarios en la barra lateral y presione 'Generar Comparación' para ver los resultados.")
 
